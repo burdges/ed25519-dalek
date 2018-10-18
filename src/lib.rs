@@ -257,6 +257,8 @@
 #![allow(unused_features)]
 #![deny(missing_docs)] // refuse to compile if documentation is missing
 
+#![feature(int_to_from_bytes)]
+
 extern crate curve25519_dalek;
 extern crate generic_array;
 extern crate digest;

@@ -673,7 +673,61 @@ impl ExpandedSecretKey {
         Signature{ R, s }
     }
 
+    ///
+    pub fn bip32<D>(&self, public_key: &PublicKey, i: u32) -> ExpandedSecretKey
+        where D: Digest<OutputSize = U64>
+	{
+		let hardened = i >= (1 << 31);
+        let mut h: D = D::new();
+		if hardened {
+	        h.input(&[0]);
+	        h.input(& self.to_bytes());
+		} else {
+	        h.input(&[2]);
+	        h.input(public_key.as_bytes());
+		}
+        h.input(& i.to_le_bytes()); // was to_le().to_bytes() see https://github.com/rust-lang/rust/issues/49792
+        let r = h.result();
+        let mut lower: [u8; 32] = [0u8; 32];
+		lower.copy_from_slice(&r.as_slice()[0..29]);  // We should take only 28 bytes for 224 bits, and then
+        lower[0]  &= 248;                  // multiply by 8, but it's easier to take 29, and then
+        lower[29] &= 7;                    // zero the low and high bits leaving 224 bits.
+		let mut key = self.key.clone();
+		key += Scalar::from_bits(lower);
+		// This is a rediculous way to add modulo 256.  In fact, we should use hash
+		// output directly in hardened mode, and maybe hash again in soft mode.
+		let mut nonce = self.nonce.clone();
+		let mut carry = 0u16;
+		for (n,u) in nonce.iter_mut().zip(&r.as_slice()[32..64]) {
+			carry += *n as u16;
+			carry += *u as u16; 
+			*n = (carry & 0xFF) as u8;
+			carry >>= 8;
+		}
+		ExpandedSecretKey { key, nonce }
+    }
+
+    /// 
+    pub fn bip32_chaincode<D>(&self, public_key: &PublicKey, i: u32) -> [u8; 32]
+        where D: Digest<OutputSize = U64> 
+	{
+		let hardened = i >= (1 << 31);
+        let mut h: D = D::new();
+		if hardened {
+	        h.input(&[1]);
+	        h.input(& self.to_bytes());
+		} else {
+	        h.input(&[3]);
+	        h.input(public_key.as_bytes());
+		}
+        h.input(& i.to_le_bytes()); // was to_le().to_bytes() see https://github.com/rust-lang/rust/issues/49792
+        let r = h.result();
+        let mut upper: [u8; 32] = [0u8; 32];
+		upper.copy_from_slice(&r.as_slice()[32..64]);
+		upper
+    }
 }
+
 
 #[cfg(feature = "serde")]
 impl Serialize for ExpandedSecretKey {
@@ -896,6 +950,40 @@ impl PublicKey {
         } else {
             Err(SignatureError(InternalError::VerifyError))
         }
+    }
+
+	///
+    pub fn bip32<D>(&self, i: u32) -> Option<PublicKey>
+        where D: Digest<OutputSize = U64>
+	{
+		if i >= (1 << 31) { return None; }
+		let mut pk = self.0.decompress()?; // We should ideally report an error here instead of None.
+        let mut h: D = D::new();
+        h.input(&[2]);
+	    h.input(self.as_bytes());
+        h.input(& i.to_le_bytes()); // was to_le().to_bytes() see https://github.com/rust-lang/rust/issues/49792
+        let r = h.result();
+        let mut lower: [u8; 32] = [0u8; 32];
+		lower.copy_from_slice(&r.as_slice()[0..29]);  // We should take only 28 bytes for 224 bits, and then
+        lower[0]  &= 248;                  // multiply by 8, but it's easier to take 29, and then
+        lower[29] &= 7;                    // zero the low and high bits leaving 224 bits.
+        pk += &Scalar::from_bits(lower) * &constants::ED25519_BASEPOINT_TABLE;
+        Some(PublicKey(CompressedEdwardsY(pk.compress().to_bytes())))
+	}
+
+    /// 
+    pub fn bip32_chaincode<D>(&self, i: u32) -> Option<[u8; 32]>
+        where D: Digest<OutputSize = U64> 
+	{
+		if i >= (1 << 31) { return None; }
+        let mut h: D = D::new();
+	    h.input(&[3]);
+	    h.input(self.as_bytes());
+        h.input(& i.to_le_bytes()); // was to_le().to_bytes() see https://github.com/rust-lang/rust/issues/49792
+        let r = h.result();
+        let mut upper: [u8; 32] = [0u8; 32];
+		upper.copy_from_slice(&r.as_slice()[32..64]);
+		Some(upper)
     }
 }
 
