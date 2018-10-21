@@ -673,7 +673,58 @@ impl ExpandedSecretKey {
         Signature{ R, s }
     }
 
+    /// bip32 alternative
+    pub fn derivative_key_private<D>(&self, mask: &[u8]) -> ExpandedSecretKey
+        where D: Digest<OutputSize = U64>
+	{
+        let mut h: D = D::new();
+	    h.input(&[0]);
+	    h.input(& self.to_bytes());
+		h.input(mask); 
+        let r = h.result();
+        let mut lower: [u8; 32] = [0u8; 32];
+		lower.copy_from_slice(& r.as_slice()[0..29]);  // We should take only 28 bytes for 224 bits, and then
+        lower[0]  &= 248;                              // multiply by 8, but it's easier to take 29, and then
+        lower[29] &= 7;                                // zero the low and high bits leaving 224 bits.
+		let mut key = self.key.clone();
+		key += Scalar::from_bits(lower);
+		// This is a rediculous way to add modulo 256.  In fact, we should use hash
+		// output directly in hardened mode, and maybe hash again in soft mode.
+        let mut nonce: [u8; 32] = [0u8; 32];
+		nonce.copy_from_slice(& r.as_slice()[32..64]);
+		ExpandedSecretKey { key, nonce }
+    }
+
+    /// bip32 alternative
+    pub fn derivative_key_public<D>(&self, public_key: &PublicKey, mask: &[u8]) -> (ExpandedSecretKey, [u8; 32])
+        where D: Digest<OutputSize = U64>
+	{
+        let mut h: D = D::new();
+	    h.input(&[2]);
+	    h.input(public_key.as_bytes());
+        h.input(mask);
+        let r = h.result();
+        let mut chaincode: [u8; 32] = [0u8; 32];
+		chaincode.copy_from_slice(& r.as_slice()[32..64]);		
+        let mut lower: [u8; 32] = [0u8; 32];
+		lower.copy_from_slice(& r.as_slice()[0..29]);  // We should take only 28 bytes for 224 bits, and then
+        lower[0]  &= 248;                              // multiply by 8, but it's easier to take 29, and then
+        lower[29] &= 7;                                // zero the low and high bits leaving 224 bits.
+		let mut key = self.key.clone();
+		key += Scalar::from_bits(lower);
+
+        let mut nonce: [u8; 32] = [0u8; 32];
+        let mut h: D = D::new();
+	    h.input(&[2]);
+	    h.input(& self.to_bytes());  // We compute the nonce from the private key instead of the public key.
+		h.input(mask); 
+        let r = h.result();
+		nonce.copy_from_slice(& r.as_slice()[32..64]);
+
+		(ExpandedSecretKey { key, nonce }, chaincode)
+    }
 }
+
 
 #[cfg(feature = "serde")]
 impl Serialize for ExpandedSecretKey {
@@ -896,6 +947,30 @@ impl PublicKey {
         } else {
             Err(SignatureError(InternalError::VerifyError))
         }
+    }
+
+    /// bip32 alternative
+    pub fn derivative_key_public<D>(&self, mask: &[u8]) -> Result<(PublicKey, [u8; 32]), SignatureError>
+        where D: Digest<OutputSize = U64>
+	{
+        let mut pk: EdwardsPoint = match self.0.decompress() {
+            Some(x) => x,
+            None    => return Err(SignatureError(InternalError::PointDecompressionError)),
+        };
+
+        let mut h: D = D::new();
+	    h.input(&[2]);
+	    h.input(self.as_bytes());
+        h.input(mask);
+        let r = h.result();
+        let mut chaincode: [u8; 32] = [0u8; 32];
+		chaincode.copy_from_slice(& r.as_slice()[32..64]);		
+        let mut lower: [u8; 32] = [0u8; 32];
+		lower.copy_from_slice(& r.as_slice()[0..29]);  // We should take only 28 bytes for 224 bits, and then
+        lower[0]  &= 248;                              // multiply by 8, but it's easier to take 29, and then
+        lower[29] &= 7;                                // zero the low and high bits leaving 224 bits.
+        pk += &Scalar::from_bits(lower) * &constants::ED25519_BASEPOINT_TABLE;
+        Ok((PublicKey(CompressedEdwardsY(pk.compress().to_bytes())), chaincode))
     }
 }
 
